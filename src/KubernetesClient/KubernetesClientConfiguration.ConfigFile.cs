@@ -534,7 +534,7 @@ namespace k8s
                 process.StartInfo.Arguments = string.Join(" ", config.Arguments);
             }
 
-            process.StartInfo.RedirectStandardOutput = true;
+            process.StartInfo.RedirectStandardOutput = false;
             process.StartInfo.RedirectStandardError = true;
             process.StartInfo.UseShellExecute = false;
             process.StartInfo.CreateNoWindow = true;
