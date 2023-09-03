@@ -1,7 +1,6 @@
 using k8s.Authentication;
 using k8s.Exceptions;
 using k8s.KubeConfigModels;
-using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Runtime.InteropServices;
@@ -27,16 +26,6 @@ namespace k8s
 
         // For testing
         internal static string KubeConfigEnvironmentVariable { get; set; } = "KUBECONFIG";
-
-        /// <summary>
-        ///     Exec process timeout
-        /// </summary>
-        public static TimeSpan ExecTimeout { get; set; } = TimeSpan.FromMinutes(2);
-
-        /// <summary>
-        ///     Exec process Standard Errors
-        /// </summary>
-        public static event EventHandler<DataReceivedEventArgs> ExecStdError;
 
         /// <summary>
         ///     Initializes a new instance of the <see cref="KubernetesClientConfiguration" /> from default locations
@@ -465,7 +454,8 @@ namespace k8s
                     throw new KubeConfigException("External command execution missing ApiVersion key");
                 }
 
-                var response = ExecuteExternalCommand(userDetails.UserCredentials.ExternalExecution);
+                var provider = new ExecTokenProvider(userDetails.UserCredentials.ExternalExecution);
+                var response = provider.RefreshToken();
                 AccessToken = response.Status.Token;
                 // When reading ClientCertificateData from a config file it will be base64 encoded, and code later in the system (see CertUtils.GeneratePfx)
                 // expects ClientCertificateData and ClientCertificateKeyData to be base64 encoded because of this. However the string returned by external
@@ -474,12 +464,7 @@ namespace k8s
                 ClientCertificateKeyData = response.Status.ClientKeyData == null ? null : Convert.ToBase64String(System.Text.Encoding.ASCII.GetBytes(response.Status.ClientKeyData));
 
                 userCredentialsFound = true;
-
-                // TODO: support client certificates here too.
-                if (AccessToken != null)
-                {
-                    TokenProvider = new ExecTokenProvider(userDetails.UserCredentials.ExternalExecution);
-                }
+                TokenProvider = provider;
             }
 
             if (!userCredentialsFound)
@@ -492,122 +477,6 @@ namespace k8s
         public static string RenewAzureToken(string tenantId, string clientId, string apiServerId, string refresh)
         {
             throw new KubeConfigException("Refresh not supported.");
-        }
-
-        public static Process CreateRunnableExternalProcess(ExternalExecution config, EventHandler<DataReceivedEventArgs> captureStdError = null)
-        {
-            if (config == null)
-            {
-                throw new ArgumentNullException(nameof(config));
-            }
-
-            var execInfo = new Dictionary<string, dynamic>
-            {
-                { "apiVersion", config.ApiVersion },
-                { "kind", "ExecCredentials" },
-                { "spec", new Dictionary<string, bool> { { "interactive", Environment.UserInteractive } } },
-            };
-
-            var process = new Process();
-
-            process.StartInfo.EnvironmentVariables.Add("KUBERNETES_EXEC_INFO", JsonSerializer.Serialize(execInfo));
-            if (config.EnvironmentVariables != null)
-            {
-                foreach (var configEnvironmentVariable in config.EnvironmentVariables)
-                {
-                    if (configEnvironmentVariable.ContainsKey("name") && configEnvironmentVariable.ContainsKey("value"))
-                    {
-                        var name = configEnvironmentVariable["name"];
-                        process.StartInfo.EnvironmentVariables[name] = configEnvironmentVariable["value"];
-                    }
-                    else
-                    {
-                        var badVariable = string.Join(",", configEnvironmentVariable.Select(x => $"{x.Key}={x.Value}"));
-                        throw new KubeConfigException($"Invalid environment variable defined: {badVariable}");
-                    }
-                }
-            }
-
-            process.StartInfo.FileName = config.Command;
-            if (config.Arguments != null)
-            {
-                process.StartInfo.Arguments = string.Join(" ", config.Arguments);
-            }
-
-            process.StartInfo.RedirectStandardOutput = true;
-            process.StartInfo.RedirectStandardError = captureStdError != null;
-            process.StartInfo.UseShellExecute = false;
-            process.StartInfo.CreateNoWindow = true;
-
-            return process;
-        }
-
-        /// <summary>
-        /// Implementation of the proposal for out-of-tree client
-        /// authentication providers as described here --
-        /// https://github.com/kubernetes/community/blob/master/contributors/design-proposals/auth/kubectl-exec-plugins.md
-        /// Took inspiration from python exec_provider.py --
-        /// https://github.com/kubernetes-client/python-base/blob/master/config/exec_provider.py
-        /// </summary>
-        /// <param name="config">The external command execution configuration</param>
-        /// <returns>
-        /// The token, client certificate data, and the client key data received from the external command execution
-        /// </returns>
-        public static ExecCredentialResponse ExecuteExternalCommand(ExternalExecution config)
-        {
-            if (config == null)
-            {
-                throw new ArgumentNullException(nameof(config));
-            }
-
-            var captureStdError = ExecStdError;
-            var process = CreateRunnableExternalProcess(config, captureStdError);
-
-            try
-            {
-                process.Start();
-                if (captureStdError != null)
-                {
-                    process.ErrorDataReceived += captureStdError.Invoke;
-                    process.BeginErrorReadLine();
-                }
-            }
-            catch (Exception ex)
-            {
-                throw new KubeConfigException($"external exec failed due to: {ex.Message}");
-            }
-
-            try
-            {
-                if (!process.WaitForExit((int)(ExecTimeout.TotalMilliseconds)))
-                {
-                    throw new KubeConfigException("external exec failed due to timeout");
-                }
-
-                var responseObject = KubernetesJson.Deserialize<ExecCredentialResponse>(process.StandardOutput.ReadToEnd());
-                if (responseObject == null || responseObject.ApiVersion != config.ApiVersion)
-                {
-                    throw new KubeConfigException(
-                        $"external exec failed because api version {responseObject.ApiVersion} does not match {config.ApiVersion}");
-                }
-
-                if (responseObject.Status.IsValid())
-                {
-                    return responseObject;
-                }
-                else
-                {
-                    throw new KubeConfigException($"external exec failed missing token or clientCertificateData field in plugin output");
-                }
-            }
-            catch (JsonException ex)
-            {
-                throw new KubeConfigException($"external exec failed due to failed deserialization process: {ex}");
-            }
-            catch (Exception ex)
-            {
-                throw new KubeConfigException($"external exec failed due to uncaught exception: {ex}");
-            }
         }
 
         /// <summary>

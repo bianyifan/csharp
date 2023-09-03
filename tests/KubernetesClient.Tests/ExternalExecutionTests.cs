@@ -1,3 +1,4 @@
+using k8s.Authentication;
 using k8s.KubeConfigModels;
 using System.Collections.Generic;
 using System.Text.Json;
@@ -10,14 +11,14 @@ namespace k8s.Tests
         [Fact]
         public void CreateRunnableExternalProcess()
         {
-            var actual = KubernetesClientConfiguration.CreateRunnableExternalProcess(new ExternalExecution
+            var actual = ExecTokenProvider.CreateRunnableExternalProcess(new ExternalExecution
             {
                 ApiVersion = "testingversion",
                 Command = "command",
                 Arguments = new List<string> { "arg1", "arg2" },
                 EnvironmentVariables = new List<Dictionary<string, string>>
-                    { new Dictionary<string, string> { { "name", "testkey" }, { "value", "testvalue" } } },
-            });
+                    { new() { { "name", "testkey" }, { "value", "testvalue" } } },
+            }, false);
 
             var actualExecInfo = JsonSerializer.Deserialize<IDictionary<string, dynamic>>(actual.StartInfo.EnvironmentVariables["KUBERNETES_EXEC_INFO"]);
             Assert.Equal("testingversion", actualExecInfo["apiVersion"].ToString());
